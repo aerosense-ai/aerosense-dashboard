@@ -1,78 +1,165 @@
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
+from flask_caching import Cache
 
-from dashboard.components import InstallationSelect, Logo, Nav, Subtitle, Title
-from example.callbacks import advance_slider, make_graph, make_text
-from example.components import LearnMore, StepButtons, StepSlider
+from dashboard.components import About, InstallationSelect, Logo, Nav, Title
+from dashboard.components.sensor_select import SensorSelect
+from dashboard.components.time_range_select import TimeRangeSelect
+from dashboard.components.y_axis_select import YAxisSelect
+from dashboard.graphs import plot_connections_statistics, plot_sensors
 
 
-# NOTES FOR MARCUS
+CACHE_TIMEOUT = 3600
+
 
 app = dash.Dash(
     __name__,
     meta_tags=[{"name": "viewport", "content": "width=device-width"}],
 )
 app.title = "Aerosense Dashboard"
-server = app.server
+
+cache = Cache(app.server, config={"CACHE_TYPE": "filesystem", "CACHE_DIR": ".dashboard_cache"})
+app.config.suppress_callback_exceptions = True
+
+
+graph_section = html.Div(
+    [
+        html.Div([dcc.Markdown(id="text")], className="text-box"),
+        dcc.Graph(id="graph", style={"margin": "0px 20px", "height": "45vh"}),
+    ],
+    className="eight columns",
+)
+
+connection_stats_page = [
+    dcc.Store(id="click-output"),
+    html.Div(
+        [
+            html.Div([Logo(app.get_asset_url("logo.png")), Title(), About()]),
+            Nav(selected_tab="connection_statistics"),
+            html.Label("Installation reference", className="sidebar-content"),
+            html.Div([InstallationSelect()], id="installation-selection-section"),
+            html.Div(
+                [
+                    html.Label("Node id"),
+                    dcc.Textarea(id="node-select", value="0"),
+                    html.Label("y-axis to plot"),
+                    YAxisSelect(),
+                    html.Label("Time range"),
+                    TimeRangeSelect(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Button("Plot", id="refresh-button", n_clicks=0),
+                    html.Button("Check for new installations", id="installation-check-button", n_clicks=0),
+                ],
+                className="sidebar-content",
+            ),
+        ],
+        className="four columns sidebar",
+    ),
+    graph_section,
+]
+
+sensors_page = [
+    dcc.Store(id="click-output"),
+    html.Div(
+        [
+            html.Div([Logo(app.get_asset_url("logo.png")), Title(), About()]),
+            Nav(selected_tab="sensors"),
+            html.Label("Installation reference", className="sidebar-content"),
+            html.Div([InstallationSelect()], id="installation-selection-section"),
+            html.Div(
+                [
+                    html.Label("Node id"),
+                    dcc.Textarea(id="node-select", value="0"),
+                    html.Label("Sensor"),
+                    SensorSelect(),
+                    html.Label("Time range"),
+                    TimeRangeSelect(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Br(),
+                    html.Button("Plot", id="refresh-button", n_clicks=0),
+                    html.Button("Check for new installations", id="installation-check-button", n_clicks=0),
+                ],
+                className="sidebar-content",
+            ),
+        ],
+        className="four columns sidebar",
+    ),
+    graph_section,
+]
 
 
 app.layout = html.Div(
-    [
-        dcc.Store(id="click-output"),
-        html.Div(
-            [
-                html.Div(
-                    [
-                        Logo(app.get_asset_url("logo.png")),
-                        Title(),
-                        Subtitle(),
-                    ]
-                ),
-                Nav(),
-                InstallationSelect(),
-                LearnMore(),
-                StepSlider(),
-                StepButtons(),
-            ],
-            className="four columns sidebar",
-        ),
-        html.Div(
-            [
-                html.Div([dcc.Markdown(id="text")], className="text-box"),
-                dcc.Graph(id="graph", style={"margin": "0px 20px", "height": "45vh"}),
-            ],
-            id="page",
-            className="eight columns",
-        ),
-    ],
+    connection_stats_page,
+    id="main-page",
     className="row flex-display",
     style={"height": "100vh"},
 )
 
 
-@app.callback(Output("graph", "figure"), [Input("slider", "value")])
-def make_graph_callback(value):
-    return make_graph(value)
+@app.callback(
+    Output("graph", "figure"),
+    State("nav-tabs", "value"),
+    State("installation_select", "value"),
+    State("node-select", "value"),
+    State("y_axis_select", "value"),
+    State("time_range_select", "value"),
+    Input("refresh-button", "n_clicks"),
+)
+@cache.memoize(timeout=CACHE_TIMEOUT, args_to_ignore=["refresh"])
+def plot_graph(page_name, installation_reference, node_id, y_axis_column, time_range, refresh):
+    """Plot a graph of the connection statistics for the given installation, y-axis column, and time range when these
+    values are changed or the refresh button is clicked.
 
+    :param str page_name:
+    :param str installation_reference:
+    :param str y_axis_column:
+    :param str time_range:
+    :param int refresh:
+    :return plotly.graph_objs.Figure:
+    """
+    if not node_id:
+        node_id = None
 
-@app.callback(Output("text", "children"), [Input("slider", "value")])
-def make_text_callback(value):
-    return make_text(value)
+    if page_name == "connection_statistics":
+        return plot_connections_statistics(installation_reference, node_id, y_axis_column, time_range)
+    else:
+        return plot_sensors(installation_reference, node_id, y_axis_column, time_range)
 
 
 @app.callback(
-    [Output("slider", "value"), Output("click-output", "data")],
-    [Input("back", "n_clicks"), Input("next", "n_clicks")],
-    [State("slider", "value"), State("click-output", "data")],
+    Output("installation-selection-section", "children"),
+    Input("installation-check-button", "n_clicks"),
+    State("installation_select", "value"),
 )
-def advance_slider_callback(back, nxt, slider, last_history):
-    return advance_slider(back, nxt, slider, last_history)
+def update_installation_selector(refresh, current_installation_reference):
+    """Update the installation selector with any new installations when the refresh button is clicked.
+
+    :param int refresh:
+    :return list:
+    """
+    return [InstallationSelect(current_installation_reference)]
 
 
-@app.callback(Output("output", "children"), [Input("radios", "value")])
-def display_value(value):
-    return f"Selected value: {value}"
+@app.callback(
+    Output("main-page", "children"),
+    Input("nav-tabs", "value"),
+)
+def change_page(page_name):
+    """Change the page shown on the dashboard when a navigation tab is clicked.
+
+    :param str page_name:
+    :return list:
+    """
+    pages = {"sensors": sensors_page, "connection_statistics": connection_stats_page}
+    return pages[page_name]
 
 
 # Run the Dash app

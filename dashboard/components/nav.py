@@ -1,15 +1,14 @@
 from dash import dcc, html
 
 
-def Nav():
+def Nav(selected_tab="connection_statistics"):
     return html.Div(
         dcc.Tabs(
             id="nav-tabs",
-            value="about",
+            value=selected_tab,
             children=[
-                dcc.Tab(label="About", value="about"),
-                dcc.Tab(label="Connection Stats", value="constats"),
-                dcc.Tab(label="Pressures", value="pressures"),
+                dcc.Tab(label="Connection Stats", value="connection_statistics"),
+                dcc.Tab(label="Sensors", value="sensors"),
             ],
         ),
         className="sidebar-content",

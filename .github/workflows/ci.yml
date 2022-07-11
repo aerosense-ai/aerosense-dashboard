@@ -37,47 +37,47 @@ jobs:
       - name: Check version
         run: check-semantic-version pyproject.toml
 
-  run-tests:
-    if: "!contains(github.event.head_commit.message, 'skipci')"
-    strategy:
-      fail-fast: true
-      matrix:
-        python: ["3.8", "3.9", "3.10"]
-        os: [ubuntu-latest] # [ubuntu-latest, windows-latest, macos-latest] for full coverage but this gets expensive quickly
-    runs-on: ${{ matrix.os }}
-
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: "read"
+      id-token: "write"
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      - name: Setup Python ${{ matrix.python }}
-        uses: actions/setup-python@v2
+      - name: Authenticate with Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v0.6.0
         with:
-          python-version: ${{ matrix.python }}
+          # NOTE: If setting create_credentials_file=true, .dockerignore file must include `gha-creds-*.json` to avoid baking these credentials into build
+          create_credentials_file: true
+          workload_identity_provider: "projects/885434704038/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider"
+          service_account: "aerosense-dashboard-deployment@aerosense-twined.iam.gserviceaccount.com"
 
-        # See the repo of this action for way more advanced caching strategies than used here
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
 
-        # For more advanced configuration see https://github.com/ymyzk/tox-gh-actions
-      - name: Install tox and plugins
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install tox==3.24.5 tox-gh-actions==2.9.1 tox-poetry==0.4.1
+      - name: Setup gcloud
+        uses: "google-github-actions/setup-gcloud@v0"
 
-      - name: Setup tmate session [DEBUG]
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'true'}}
-        uses: mxschmitt/action-tmate@v3
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker europe-west6-docker.pkg.dev
 
-      # For more advanced configuration see https://github.com/ymyzk/tox-gh-actions
-      - name: Run tests using tox
-        run: tox
-
-      - name: Upload coverage to Codecov
-        # This seems redundant inside the test matrix but actually isn't, since different
-        # dependency combinations may cause different lines of code to be hit (e.g. backports)
-        uses: codecov/codecov-action@v1
+      - name: Build
+        id: build
+        uses: docker/build-push-action@v2
         with:
-          file: coverage.xml
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+          context: .
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: europe-west6-docker.pkg.dev/aerosense-twined/aerosense-dashboard:latest
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v0
+        with:
+          service: aerosense-dashboard
+          image: ${{ steps.build.outputs.imageid }}
+          region: europe-west6
